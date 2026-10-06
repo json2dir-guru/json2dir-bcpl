@@ -1,0 +1,43 @@
+#!/bin/sh
+# The BCPL evaluator (json2dir.b, compiled to out/json2dir Cintcode) owns UTF-8 checking,
+# JSON parsing, validation, traversal and shell generation; this launcher only moves bytes
+# and runs the generated script.
+# JSON2DIR_BCPL: the cintcode directory of the BCPL system (holds bin/cintsys, cin, g).
+set -eu
+
+if [ "$#" -ne 0 ]; then
+  printf '%s\n' 'Usage: json2dir < file.json' >&2
+  exit 2
+fi
+
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+bcpl=${JSON2DIR_BCPL:?JSON2DIR_BCPL must point at the BCPL cintcode directory}
+
+task_tmp=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/json2dir.XXXXXXXXXX")
+trap 'rm -rf -- "$task_tmp"' 0
+trap 'exit 1' HUP INT TERM
+
+if ! (umask 077; cat > "$task_tmp/input.json"); then
+  printf '%s\n' "json2dir: couldn't read stdin" >&2
+  exit 1
+fi
+
+# cintsys passes the command's returncode back as its exit status; its own messages
+# go to stderr. The script is only run if the evaluator succeeded and wrote its end
+# marker as the last line.
+if ! (
+  umask 077
+  cd "$script_dir/out"
+  BCPLROOT=$bcpl BCPLPATH=$bcpl/cin BCPLHDRS=$bcpl/g \
+    "$bcpl/bin/cintsys" -q -m 50000000 \
+    -c "stack 200000; json2dir \"$task_tmp/input.json\" \"$task_tmp/tree.sh\"" \
+    < /dev/null >&2
+); then
+  exit 1
+fi
+if [ ! -f "$task_tmp/tree.sh" ] || [ "$(tail -n 1 "$task_tmp/tree.sh")" != '# json2dir: end' ]; then
+  printf '%s\n' 'json2dir: the evaluator did not finish' >&2
+  exit 1
+fi
+
+"${JSON2DIR_SHELL:-/bin/sh}" "$task_tmp/tree.sh"
